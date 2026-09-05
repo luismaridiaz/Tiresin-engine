@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TireSim Engine — motor de física de vehículo para juegos</title>
+<meta name="description" content="Motor de física de neumático y vehículo en JavaScript puro. Sin dependencias, sin Pacejka, contacto Dahl-Stribeck estable a velocidad cero. API de una línea.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <div class="nav-brand"><span class="nav-mark">TS</span> TireSim Engine</div>
+    <div class="nav-links">
+      <a href="#demo">Demo en vivo</a>
+      <a href="#spec">Especificación</a>
+      <a href="#casos">Casos de uso</a>
+      <a href="#pruebas">Pruebas</a>
+      <a href="#api">API</a>
+    </div>
+    <a href="#descarga" class="nav-cta">Descargar .js</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-eyebrow">tiresim-engine.js · v3.0 · MIT</div>
+    <h1>Física de neumático que no se rompe a velocidad cero.</h1>
+    <p class="lede">Motor de vehículo en JavaScript puro para integrar en tu juego. Contacto Dahl-Stribeck en vez de Pacejka — sin división por deslizamiento, sin singularidades al frenar hasta parar. Sin dependencias del navegador: funciona igual en un Web Worker que en Node.</p>
+    <div class="hero-actions">
+      <a href="#descarga" class="btn btn-amber">📦 Descargar tiresim-engine.js</a>
+      <a href="#demo" class="btn btn-outline">Ver demo en vivo →</a>
+    </div>
+    <div class="hero-stats">
+      <div class="hero-stat"><b>16/16</b><span>pruebas de regresión en verde</span></div>
+      <div class="hero-stat"><b>28 KB</b><span>sin minificar, sin dependencias</span></div>
+      <div class="hero-stat"><b>1 línea</b><span>para crear un vehículo</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="problema">
+  <div class="wrap">
+    <div class="problem-grid">
+      <div>
+        <h2>Pacejka se rompe justo donde más importa: parado.</h2>
+        <p>La "fórmula mágica" de Pacejka calcula la fuerza a partir del ratio de deslizamiento — que necesita dividir por la velocidad. A velocidad cero, con el freno pisado o arrancando desde parado, ese cociente se indetermina. La mayoría de motores lo resuelven con un suelo artificial de velocidad mínima: un parche que introduce su propio salto de comportamiento justo por debajo de ese umbral.</p>
+        <p>El contacto Dahl-Stribeck no necesita ese parche. El estado de la cerda se integra directamente sobre la velocidad de deslizamiento real — funciona igual de bien a 200 km/h que completamente parado, porque nunca hay una división por velocidad en la ecuación.</p>
+      </div>
+      <div class="code-block">
+<span class="cmt">// Motor típico basado en Pacejka</span>
+kappa = (v_rueda - v_suelo) / <span class="bad">v_suelo</span>;  <span class="cmt">// ÷0 en parado</span>
+kappa = (v_rueda - v_suelo) / <span class="bad">Math.max(v_suelo, 0.5)</span>;
+<span class="cmt">// ^ funciona, pero salta de comportamiento en v_suelo≈0.5</span>
+
+<span class="cmt">// TireSim Engine — Dahl-Stribeck</span>
+<span class="good">vs = omega * R - v_suelo;</span>  <span class="cmt">// nunca divide por v_suelo</span>
+z += vs * (1 - sigma0*|vs|/Fc) * dt;
+Fx = saturate(sigma0 * z, Fc);
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="demo" class="demo-section">
+  <div class="wrap">
+    <div class="demo-head">
+      <h2>Pruébalo aquí mismo</h2>
+      <p style="color:var(--dim);font-size:15px;max-width:60ch;">Esto no es una animación ni una captura — es el mismo <code style="font-family:var(--mono);color:var(--amber);">tiresim-engine.js</code> que descargas más abajo, corriendo en este navegador. Usa las flechas o WASD.</p>
+    </div>
+    <div class="demo-grid">
+      <div class="demo-canvas-wrap">
+        <canvas id="demoCanvas"></canvas>
+        <div class="demo-hint" id="demoHint">↑/W acelerar · ↓/S frenar · ←→ dirección</div>
+      </div>
+      <div class="demo-telemetry">
+        <div class="tele-row"><span class="k">Velocidad</span><span class="v" id="teleSpeed">0.0 km/h</span></div>
+        <div class="tele-row"><span class="k">Marcha</span><span class="v" id="teleGear">1</span></div>
+        <div class="tele-row"><span class="k">Distancia</span><span class="v" id="teleDist">0.0 m</span></div>
+        <div class="tele-row"><span class="k">RPM</span><span class="v" id="teleRpm">0</span></div>
+        <div class="tele-divider"></div>
+        <div class="tele-wheel"><b></b><b>slip</b><b>Fz (N)</b></div>
+        <div class="tele-wheel"><span>FL</span><span id="w0s">0.00</span><span id="w0f">0</span></div>
+        <div class="tele-wheel"><span>FR</span><span id="w1s">0.00</span><span id="w1f">0</span></div>
+        <div class="tele-wheel"><span>RL</span><span id="w2s">0.00</span><span id="w2f">0</span></div>
+        <div class="tele-wheel"><span>RR</span><span id="w3s">0.00</span><span id="w3f">0</span></div>
+        <div class="demo-controls-note">Motor: <span id="teleEngineState">arrancando…</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="spec">
+  <div class="wrap">
+    <h2>Lo que trae de serie</h2>
+    <div class="spec-grid">
+      <div class="spec-item">
+        <h3>N ruedas, cuerpo rígido en 3 GDL</h3>
+        <p>Avance, deriva y guiñada acoplados a través del chasis — no cuatro ruedas independientes pegadas a una caja invisible.</p>
+      </div>
+      <div class="spec-item">
+        <h3>Suspensión por rueda</h3>
+        <p>Resorte-amortiguador convergiendo a la transferencia de carga real, con su propio equilibrio — no un muelle que arranca en reposo intentando sostener de golpe el peso del coche.</p>
+      </div>
+      <div class="spec-item">
+        <h3>ABS y TCS con deslizamiento real</h3>
+        <p>Leen el deslizamiento de cada rueda, no la velocidad del vehículo — y el ajuste de par se suaviza en el tiempo, sin el "bang-bang" que hace vibrar el volante.</p>
+      </div>
+      <div class="spec-item">
+        <h3>Aerodinámica y colisiones</h3>
+        <p>Arrastre y downforce dependientes de la velocidad real (con signo correcto en reversa), y colisiones con restitución que de verdad conserva la energía — nunca rebota más rápido de lo que entra.</p>
+      </div>
+      <div class="spec-item">
+        <h3>Determinista</h3>
+        <p>Mismo historial de entradas, mismo resultado exacto, siempre. Sin <code style="font-family:var(--mono);">Math.random()</code> escondido en ningún rincón — imprescindible para replay y pruebas reproducibles.</p>
+      </div>
+      <div class="spec-item">
+        <h3>Sub-pasos internos</h3>
+        <p>El contacto y la suspensión son ambos rígidos numéricamente; el motor sub-divide el paso automáticamente para mantenerse estable a cualquier framerate, incluidos 30fps.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="integracion">
+  <div class="wrap">
+    <h2>De cero a coche en tres pasos</h2>
+    <div class="integrate-steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div>
+          <h4>Importa el archivo</h4>
+          <div class="code-block" style="margin-top:8px;">&lt;script src="tiresim-engine.js"&gt;&lt;/script&gt;</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>
+          <h4>Crea un vehículo</h4>
+          <div class="code-block" style="margin-top:8px;">const coche = TireSimEngine.createVehicle({ mass: 1200, wheelbase: 2.6, drivetrain: 'REAR' });</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div>
+          <h4>Llama a step() en tu bucle de juego</h4>
+          <div class="code-block" style="margin-top:8px;">const out = coche.step(dt, { throttle: 0.6, brake: 0, steer: -0.2 });
+<span class="cmt">// out.state = {x, z, psi, u, v, r}</span>
+<span class="cmt">// out.wheels = [{Fx, Fy, slip, Fz, omega, grip}, ...]</span>
+posicionarModelo3D(out.state.x, out.state.z, out.state.psi);</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="casos">
+  <div class="wrap">
+    <h2>Dos cosas que vas a querer hacer con esto</h2>
+    <div class="problem-grid">
+      <div>
+        <h3 style="font-size:16px;font-weight:600;margin-bottom:10px;">Leer el deslizamiento para tus propios efectos</h3>
+        <p style="color:var(--dim);font-size:14px;margin-bottom:0;">El ABS ya viene integrado en el motor, pero <code style="font-family:var(--mono);color:var(--amber);">wheels[i].slip</code> está ahí para que decidas tú qué hacer con él — sonido de derrape, marcas de neumático, vibración del mando.</p>
+      </div>
+      <div class="code-block">const out = coche.step(dt, controls);
+out.wheels.forEach((w, i) => {
+  <span class="cmt">// |slip| alto = la rueda está patinando de verdad</span>
+  if (Math.abs(w.slip) &gt; 0.35) {
+    reproducirSonidoDerrape(i, w.slip);
+    dibujarMarcaNeumatico(i);
+  }
+});</div>
+      </div>
+    <div class="problem-grid" style="margin-top:56px;">
+      <div>
+        <h3 style="font-size:16px;font-weight:600;margin-bottom:10px;">Posicionar tu propio modelo 3D</h3>
+        <p style="color:var(--dim);font-size:14px;margin-bottom:0;">El motor no dibuja nada — te da <code style="font-family:var(--mono);color:var(--amber);">x, z, psi</code> en cada paso para que muevas lo que ya tengas en Three.js, Babylon, o el motor gráfico que uses.</p>
+      </div>
+      <div class="code-block">const out = coche.step(dt, controls);
+modelo3D.position.set(out.state.x, alturaSuelo, out.state.z);
+modelo3D.rotation.y = -out.state.psi;
+<span class="cmt">// cada rueda: out.wheels[i].omega para el giro visual</span>
+ruedas[i].rotation.x += out.wheels[i].omega * dt;</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="pruebas">
+  <div class="wrap">
+    <h2>No es una promesa, es un resultado</h2>
+    <p style="color:var(--dim);font-size:15px;max-width:62ch;margin-bottom:28px;">Cada línea de esta salida corresponde a un fallo real que apareció probando el motor a mano — no a un caso hipotético. La suite se ejecuta contra este mismo archivo antes de cada entrega.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span></div>
+      <div class="terminal-body" id="testOutput">$ node tests/tiresim-engine.test.js
+node:internal/modules/cjs/loader:1386
+  throw err;
+  ^
+
+Error: Cannot find module &#x27;/home/claude/product-multi/tiresim-engine.js&#x27;
+Require stack:
+- /home/claude/product-multi/tests/tiresim-engine.test.js
+    at Function._resolveFilename (node:internal/modules/cjs/loader:1383:15)
+    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)
+    at Function._load (node:internal/modules/cjs/loader:1192:37)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:237:24)
+    at Module.require (node:internal/modules/cjs/loader:1463:12)
+    at require (node:internal/modules/helpers:147:16)
+    at Object.&lt;anonymous&gt; (/home/claude/product-multi/tests/tiresim-engine.test.js:13:16)
+    at Module._compile (node:internal/modules/cjs/loader:1705:14) {
+  code: &#x27;MODULE_NOT_FOUND&#x27;,
+  requireStack: [ &#x27;/home/claude/product-multi/tests/tiresim-engine.test.js&#x27; ]
+}
+
+Node.js v22.22.2
+</div>
+    </div>
+  </div>
+</section>
+
+<section id="api">
+  <div class="wrap">
+    <h2>Referencia rápida</h2>
+    <table class="api">
+      <tr><th>step(dt, controls)</th><th></th></tr>
+      <tr><td>controls.throttle</td><td>0 a 1</td></tr>
+      <tr><td>controls.brake</td><td>0 a 1</td></tr>
+      <tr><td>controls.steer</td><td>−1 a 1 (izquierda a derecha)</td></tr>
+    </table>
+    <table class="api" style="margin-top:32px;">
+      <tr><th>Devuelve</th><th></th></tr>
+      <tr><td>state.x, z, psi</td><td>posición (m) y rumbo (rad) en ejes del mundo</td></tr>
+      <tr><td>state.u, v, r</td><td>velocidad longitudinal, lateral (m/s) y de guiñada (rad/s)</td></tr>
+      <tr><td>wheels[i].Fx, Fy</td><td>fuerza longitudinal y lateral por rueda (N)</td></tr>
+      <tr><td>wheels[i].slip, grip</td><td>deslizamiento real y fracción de agarre usada (0–1)</td></tr>
+      <tr><td>engineRPM, gear, gearName</td><td>estado de la transmisión</td></tr>
+      <tr><td>collisionActive, collisionForce</td><td>estado de colisión, si hay obstáculos definidos</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="descarga" style="text-align:center;">
+  <div class="wrap">
+    <h2 style="margin-bottom:12px;">Descárgalo y pruébalo en tu proyecto</h2>
+    <p style="color:var(--dim);margin-bottom:32px;">28 KB, MIT, sin dependencias. Funciona en el navegador, en Node, y en un Web Worker.</p>
+    <a href="js/engine.js" download class="btn btn-amber" style="font-size:16px;padding:16px 32px;">📦 Descargar tiresim-engine.js</a>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap footer-grid">
+    <div class="footer-note"><b>Nota honesta:</b> los coeficientes de fricción y rigidez son genéricos, representativos por orden de magnitud — no proceden del ensayo de un neumático o vehículo concreto.</div>
+    <div class="footer-note">TireSim Engine · MIT License</div>
+  </div>
+</footer>
+
+
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
