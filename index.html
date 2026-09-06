@@ -72,17 +72,90 @@ Fx = saturate(sigma0 * z, Fc);
     <div class="demo-head">
       <h2>Pruébalo aquí mismo</h2>
       <p style="color:var(--dim);font-size:15px;max-width:60ch;">Esto no es una animación ni una captura — es el mismo <code style="font-family:var(--mono);color:var(--amber);">tiresim-engine.js</code> que descargas más abajo, corriendo en este navegador. Usa las flechas o WASD.</p>
+      <div class="demo-selectors" style="display:flex;gap:20px;flex-wrap:wrap;margin-top:20px;">
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-outline car-btn" data-car="stock">🚗 Sedán</button>
+          <button class="btn btn-outline car-btn" data-car="sport">🏎️ Deportivo</button>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-outline weather-btn" data-weather="dry">☀️ Seco</button>
+          <button class="btn btn-outline weather-btn" data-weather="rain">🌧️ Lluvia</button>
+          <button class="btn btn-outline weather-btn" data-weather="snow">❄️ Nieve</button>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button id="audioToggleBtn" class="btn btn-amber">🔊 Activar sonido</button>
+          <button id="modeToggleBtn" class="btn btn-outline">🕹️ Cambiar a manual (M)</button>
+          <button id="viewToggleBtn" class="btn btn-outline">📹 Vista inmersiva</button>
+        </div>
+      </div>
     </div>
     <div class="demo-grid">
       <div class="demo-canvas-wrap">
         <canvas id="demoCanvas"></canvas>
-        <div class="demo-hint" id="demoHint">↑/W acelerar · ↓/S frenar · ←→ dirección</div>
+        <canvas id="minimapCanvas" width="120" height="120"></canvas>
+        <div class="minimap-title">Radar</div>
+        <!-- Vista inmersiva (pseudo-3D): conductor arriba, exterior abajo.
+             Oculta por defecto — el modo normal (de arriba) sigue siendo
+             el principal, este es un modo alternable, no un reemplazo. -->
+        <div class="immersive-wrap" id="immersiveWrap" style="display:none;">
+          <div class="viewport-container" id="driverViewport">
+            <canvas id="driverCanvas"></canvas>
+            <div class="viewport-label">👁️ Vista conductor</div>
+          </div>
+          <div class="viewport-container" id="chaseViewport">
+            <canvas id="chaseCanvas"></canvas>
+            <div class="viewport-label">📹 Vista exterior</div>
+          </div>
+        </div>
+        <div class="demo-hint" id="demoHint">↑/W acelerar · ↓/S frenar · ←→ dirección · Q/E cambiar marcha (manual)</div>
+        <div class="key-indicator" id="keyIndicator">
+          <div class="key-box" id="keyUp">W</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+            <div class="key-box" id="keyLeft">A</div>
+            <div class="key-box" id="keyDown">S</div>
+            <div class="key-box" id="keyRight">D</div>
+          </div>
+        </div>
+        <!-- Controles táctiles de doble mando: dirección a la izquierda,
+             acelerador/freno a la derecha — solo aparecen en pantallas
+             realmente táctiles (sin ratón, puntero basto). El indicador
+             W/A/S/D de arriba se oculta ahí para no solaparse; en
+             escritorio sigue siendo el único control visible. -->
+        <div class="touch-controls" id="touchControls">
+          <div class="touch-left">
+            <button class="touch-btn" data-key="arrowleft" aria-label="Girar a la izquierda">◀</button>
+            <button class="touch-btn" data-key="arrowright" aria-label="Girar a la derecha">▶</button>
+          </div>
+          <div class="touch-right">
+            <button class="touch-btn" data-key="arrowdown" aria-label="Frenar">▼</button>
+            <button class="touch-btn" data-key="arrowup" aria-label="Acelerar">▲</button>
+          </div>
+        </div>
       </div>
       <div class="demo-telemetry">
         <div class="tele-row"><span class="k">Velocidad</span><span class="v" id="teleSpeed">0.0 km/h</span></div>
         <div class="tele-row"><span class="k">Marcha</span><span class="v" id="teleGear">1</span></div>
+        <div class="tele-row"><span class="k">Transmisión</span><span class="v" id="teleTransmissionMode">Auto</span></div>
         <div class="tele-row"><span class="k">Distancia</span><span class="v" id="teleDist">0.0 m</span></div>
-        <div class="tele-row"><span class="k">RPM</span><span class="v" id="teleRpm">0</span></div>
+        <div class="tele-row" style="display:block;margin-bottom:8px;">
+          <span class="k" style="display:block;margin-bottom:4px;">RPM</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="flex:1;height:8px;background:#262b33;border-radius:4px;overflow:hidden;">
+              <div id="rpmBar" style="height:100%;width:0%;transition:width 0.1s linear;"></div>
+            </div>
+            <span class="v" id="teleRpm" style="font-size:11px;">0</span>
+          </div>
+        </div>
+        <div class="tele-row" style="display:block;">
+          <span class="k" style="display:block;margin-bottom:6px;">Sugerencia de cambio</span>
+          <div style="display:flex;gap:8px;align-items:center;min-height:24px;">
+            <span id="shiftUpIndicator" class="shift-indicator shift-up" style="display:none;"><span class="shift-arrow">▲</span> Sube marcha</span>
+            <span id="shiftDownIndicator" class="shift-indicator shift-down" style="display:none;"><span class="shift-arrow">▼</span> Baja marcha</span>
+          </div>
+        </div>
+        <div class="tele-row"><span class="k">Colisión</span><span class="v" id="teleCollision" style="color:var(--green);">0 N</span></div>
+        <div class="tele-divider"></div>
+        <div class="tele-row"><span class="k">Superficie</span><span class="v" id="teleWeather">☀️ Seco</span></div>
         <div class="tele-divider"></div>
         <div class="tele-wheel"><b></b><b>slip</b><b>Fz (N)</b></div>
         <div class="tele-wheel"><span>FL</span><span id="w0s">0.00</span><span id="w0f">0</span></div>

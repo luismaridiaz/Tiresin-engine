@@ -102,7 +102,7 @@ h2{font-size:30px;font-weight:700;letter-spacing:-0.01em;margin-bottom:18px;}
 /* ===== DEMO ===== */
 .demo-section{padding-top:88px;}
 .demo-head{margin-bottom:40px;}
-.demo-grid{display:grid;grid-template-columns:1fr 340px;gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+.demo-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,340px);gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;}
 .demo-canvas-wrap{
   background:var(--surface);position:relative;
   aspect-ratio:16/10;
@@ -116,7 +116,11 @@ h2{font-size:30px;font-weight:700;letter-spacing:-0.01em;margin-bottom:18px;}
 }
 .demo-telemetry{
   background:var(--raised);padding:20px;border-left:1px solid var(--line);
-  display:flex;flex-direction:column;gap:14px;
+  display:flex;flex-direction:column;gap:14px;overflow:hidden;min-width:0;
+}
+.demo-telemetry > *{min-width:0;}
+.demo-telemetry .tele-row .v{
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;flex-shrink:1;
 }
 .tele-row{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;}
 .tele-row .k{color:var(--dim);}
@@ -191,3 +195,90 @@ table.api td:last-child{color:var(--dim);}
   .nav-links{display:none;}
   .hero-stats{gap:28px;}
 }
+/* ===== SELECTORES DE COCHE/CLIMA ===== */
+.car-btn.active,.weather-btn.active{background:var(--amber);color:var(--void);border-color:var(--amber);}
+
+/* ===== TECLAS EN PANTALLA (también botones táctiles reales) ===== */
+.key-indicator{position:absolute;bottom:16px;left:16px;display:flex;gap:4px;}
+.key-box{
+  width:28px;height:28px;background:rgba(10,12,15,0.8);border:1px solid var(--line);
+  border-radius:4px;display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-size:12px;color:var(--dim);transition:all 0.1s ease;
+  cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:none;
+}
+.key-box.active{background:var(--amber);color:var(--void);border-color:var(--amber);transform:translateY(2px);}
+/* En pantallas táctiles (dedo, no puntero fino) el objetivo de 28px es
+   demasiado pequeño para pulsar con fiabilidad — se agranda solo ahí,
+   sin afectar al aspecto compacto en escritorio con ratón. */
+@media (pointer:coarse){
+  .key-box{width:44px;height:44px;font-size:15px;}
+}
+
+/* ===== MINIMAPA ===== */
+#minimapCanvas{
+  position:absolute;top:16px;right:16px;width:120px;height:120px;
+  background:rgba(10,12,15,0.75);border:1px solid var(--line);border-radius:8px;
+}
+.minimap-title{
+  position:absolute;top:20px;right:24px;font-size:9px;font-family:var(--mono);
+  color:var(--dimmer);text-transform:uppercase;letter-spacing:0.5px;pointer-events:none;
+}
+
+/* ===== BARRA DE RPM ===== */
+#rpmBar{background:linear-gradient(90deg,var(--green) 0%,var(--amber) 70%,var(--red) 100%);}
+
+/* ===== BOTÓN DE AUDIO / MODO MANUAL ===== */
+#audioToggleBtn,#modeToggleBtn{transition:opacity 0.5s ease,transform 0.5s ease,background 0.2s ease,color 0.2s ease;}
+#audioToggleBtn:disabled{background:var(--line);color:var(--dim);cursor:not-allowed;border-color:var(--line);opacity:0.7;}
+#audioToggleBtn.audio-active{background:var(--green);color:var(--void);border-color:var(--green);}
+#modeToggleBtn.active{background:var(--amber);color:var(--void);border-color:var(--amber);}
+
+/* ===== INDICADOR DE CAMBIO DE MARCHA (ANIMADO) ===== */
+.shift-indicator{
+  display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:4px;
+  font-size:12px;font-weight:600;animation:shiftPulse 0.6s ease-in-out infinite alternate;
+  transition:opacity 0.2s ease,transform 0.2s ease;
+}
+.shift-up{color:var(--green);background:rgba(61,220,132,0.1);border:1px solid rgba(61,220,132,0.3);}
+.shift-down{color:var(--amber);background:rgba(255,138,61,0.1);border:1px solid rgba(255,138,61,0.3);}
+.shift-arrow{font-size:14px;line-height:1;}
+@keyframes shiftPulse{from{transform:scale(0.95);opacity:0.7;}to{transform:scale(1.05);opacity:1;}}
+.shift-down .shift-arrow{animation:arrowBounce 0.6s ease-in-out infinite alternate;}
+@keyframes arrowBounce{from{transform:translateY(2px);}to{transform:translateY(-2px);}}
+
+/* ===== CONTROLES TÁCTILES DE DOBLE MANDO (MÓVIL) ===== */
+.touch-controls{
+  position:absolute;bottom:16px;left:16px;right:16px;display:none;
+  justify-content:space-between;z-index:10;pointer-events:none;
+}
+/* Solo en pantallas realmente táctiles (sin ratón/hover) — un portátil
+   con pantalla táctil pero también trackpad no debe mostrar esto. */
+@media (hover:none) and (pointer:coarse){
+  .touch-controls{display:flex;}
+  /* El indicador W/A/S/D es útil como recordatorio de teclado; en un
+     dispositivo sin teclado físico no aporta nada y solaparía con estos
+     botones más grandes, así que se cede el sitio. */
+  #keyIndicator{display:none;}
+}
+.touch-left,.touch-right{display:flex;gap:8px;pointer-events:auto;}
+.touch-btn{
+  width:56px;height:56px;border-radius:12px;background:rgba(10,12,15,0.8);
+  border:2px solid var(--line);color:var(--text);font-size:20px;font-weight:bold;
+  display:flex;align-items:center;justify-content:center;
+  -webkit-tap-highlight-color:transparent;touch-action:none;user-select:none;
+  transition:all 0.1s ease;backdrop-filter:blur(4px);
+}
+.touch-btn.active{background:var(--amber);border-color:var(--amber);color:var(--void);transform:scale(0.95);}
+@media (max-width:480px){ .touch-btn{width:48px;height:48px;font-size:16px;} }
+
+/* ===== VISTA INMERSIVA (pseudo-3D: conductor + exterior) ===== */
+.immersive-wrap{
+  position:absolute;inset:0;display:grid;grid-template-rows:1fr 1fr;gap:4px;background:#000;
+}
+.viewport-container{position:relative;width:100%;height:100%;overflow:hidden;background:#0a0c0f;}
+.viewport-label{
+  position:absolute;top:8px;left:8px;z-index:10;font-family:var(--mono);font-size:11px;
+  color:var(--dim);background:rgba(10,12,15,0.8);padding:4px 8px;border-radius:4px;border:1px solid var(--line);
+}
+#driverCanvas,#chaseCanvas{width:100%;height:100%;display:block;}
+#viewToggleBtn.active{background:var(--amber);color:var(--void);border-color:var(--amber);}
