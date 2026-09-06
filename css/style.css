@@ -271,14 +271,12 @@ table.api td:last-child{color:var(--dim);}
 .touch-btn.active{background:var(--amber);border-color:var(--amber);color:var(--void);transform:scale(0.95);}
 @media (max-width:480px){ .touch-btn{width:48px;height:48px;font-size:16px;} }
 
-/* ===== VISTA INMERSIVA (pseudo-3D: conductor + exterior) ===== */
-.immersive-wrap{
-  position:absolute;inset:0;display:grid;grid-template-rows:1fr 1fr;gap:4px;background:#000;
-}
+/* ===== VISTA INMERSIVA (escena 3D real con Three.js) ===== */
+.immersive-wrap{position:absolute;inset:0;background:#000;}
 .viewport-container{position:relative;width:100%;height:100%;overflow:hidden;background:#0a0c0f;}
 .viewport-label{
   position:absolute;top:8px;left:8px;z-index:10;font-family:var(--mono);font-size:11px;
   color:var(--dim);background:rgba(10,12,15,0.8);padding:4px 8px;border-radius:4px;border:1px solid var(--line);
 }
-#driverCanvas,#chaseCanvas{width:100%;height:100%;display:block;}
+#scene3dContainer canvas{display:block;}
 #viewToggleBtn.active{background:var(--amber);color:var(--void);border-color:var(--amber);}

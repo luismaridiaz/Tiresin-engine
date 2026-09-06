@@ -427,6 +427,20 @@ function draw(out, dt){
   ctx.fillRect(-carW/2, -carL/2, carW, carL);
   ctx.fillStyle = '#0a0c0f';
   ctx.fillRect(-carW/2 + 4, -carL/2 + 6, carW - 8, carL*0.32);
+
+  // Ruedas visibles en las 4 esquinas reales del coche (track/wheelbase
+  // físicos, no una fracción arbitraria del sprite) — dibujadas en este
+  // mismo sistema de coordenadas local (ya trasladado y rotado con el
+  // coche), así que su posición sale gratis con el mismo cálculo que ya
+  // usa addTireMarks() para las marcas de derrape.
+  var halfTrackPx = ((car.track || 1.45) / 2) * p.scale;
+  var halfWBpx = ((car.wheelbase || 2.5) / 2) * p.scale;
+  var wheelL = carL * 0.22, wheelW = carW * 0.16;
+  ctx.fillStyle = '#15181c';
+  [[-halfWBpx, -halfTrackPx], [-halfWBpx, halfTrackPx], [halfWBpx, -halfTrackPx], [halfWBpx, halfTrackPx]].forEach(function(pos){
+    ctx.fillRect(pos[1] - wheelW/2, pos[0] - wheelL/2, wheelW, wheelL);
+  });
+
   ctx.restore();
 }
 
@@ -466,367 +480,221 @@ function drawMinimap(out){
   minimapCtx.closePath(); minimapCtx.fill();
   minimapCtx.restore();
 }
-
-// ===== VISTA INMERSIVA (pseudo-3D: conductor + exterior) =====
-// El motor es 2.5D (x, z, psi) — no hay altura/pitch/roll real, así que
-// esto es proyección en perspectiva sobre sprites 2D (como OutRun), no
-// una cámara 3D de verdad. Es un MODO ALTERNABLE al de arriba, no un
-// reemplazo: todo lo demás (clima, minimapa, transmisión, sonido,
-// controles táctiles) sigue funcionando igual en ambos modos.
+// ===== VISTA INMERSIVA: ESCENA 3D REAL CON THREE.JS =====
+// Sustituye la vista pseudo-3D anterior (proyección en perspectiva sobre
+// canvas 2D) por una escena WebGL de verdad, con geometría real de
+// neumático/llanta/radios — igual que en tiresim-pro.html, del que se
+// ha adaptado esta construcción de rueda (simplificada a un solo estilo
+// de neumático/llanta en vez del catálogo completo, que es config. de
+// producto, no algo necesario para el escaparate).
+//
+// Aviso de ejes, comprobado leyendo el motor interno de tiresim-pro.html:
+// en ESA escena original, "adelante" es el eje Z de Three.js (su propia
+// física usa worldDz = u*cos(psi), z += worldDz). En MI motor (el que
+// realmente corre aquí) "adelante" es el eje X (comprobado extensamente
+// esta sesión). Así que al pasar los datos del motor a la escena 3D,
+// threeX = out.state.z (lateral) y threeZ = out.state.x (adelante) —
+// intercambiados a propósito, no es un despiste.
 var viewMode = 'topdown';
-var driverCanvas = document.getElementById('driverCanvas');
-var driverCtx = driverCanvas ? driverCanvas.getContext('2d') : null;
-var chaseCanvas = document.getElementById('chaseCanvas');
-var chaseCtx = chaseCanvas ? chaseCanvas.getContext('2d') : null;
-var immersiveHorizonY = 0;
+var scene3d = null, camera3d = null, renderer3d = null, chassisGroup3d = null;
+var wheelMeshes3d = [], groundGroup3d = null, obstacleMeshes3d = [];
+var scene3dReady = false;
+var wheelSpinAngle = [0, 0, 0, 0];
 
-function resizeImmersiveCanvases(){
-  [driverCanvas, chaseCanvas].forEach(function(cv){
-    if (!cv) return;
-    var rect = cv.getBoundingClientRect();
-    var dpr = window.devicePixelRatio || 1;
-    cv.width = rect.width * dpr;
-    cv.height = rect.height * dpr;
-    cv.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
-  });
+function make3dWheel(){
+  var R0 = car.wheelRadius || 0.32;
+  var halfW = 0.11;
+  var tube = Math.min(0.45*R0, Math.max(0.035, halfW*0.85));
+  var torusR = Math.max(0.12, R0 - tube);
+  function axleX(geo){ geo.rotateY(Math.PI/2); return geo; }
+
+  var g = new THREE.Group();
+  var spinGroup = new THREE.Group();
+
+  var tireMesh = new THREE.Mesh(
+    axleX(new THREE.TorusGeometry(torusR, tube, 12, 22)),
+    new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.9, metalness: 0.04 })
+  );
+  spinGroup.add(tireMesh);
+
+  var sideMat = new THREE.MeshStandardMaterial({ color: 0x2a2a32, roughness: 0.85, metalness: 0.06, side: THREE.DoubleSide });
+  var side1 = new THREE.Mesh(axleX(new THREE.RingGeometry(torusR*0.72, torusR+tube*0.15, 20)), sideMat);
+  side1.position.x = halfW*0.42;
+  spinGroup.add(side1);
+  var side2 = side1.clone(); side2.position.x = -halfW*0.42;
+  spinGroup.add(side2);
+
+  var rimRing = new THREE.Mesh(
+    axleX(new THREE.TorusGeometry(torusR*0.78, Math.max(0.012, tube*0.18), 8, 18)),
+    new THREE.MeshStandardMaterial({ color: 0xb8c4d0, roughness: 0.28, metalness: 0.82 })
+  );
+  spinGroup.add(rimRing);
+
+  var hubGeo = new THREE.CylinderGeometry(0.30*R0, 0.30*R0, Math.max(0.05, halfW*1.2), 16);
+  hubGeo.rotateZ(Math.PI/2);
+  var hub = new THREE.Mesh(hubGeo, new THREE.MeshStandardMaterial({ color: 0xe8a54b, roughness: 0.3, metalness: 0.7, emissive: 0xe8a54b, emissiveIntensity: 0.35 }));
+  spinGroup.add(hub);
+
+  var spokeMat = new THREE.MeshStandardMaterial({ color: 0xb8c4d0, roughness: 0.32, metalness: 0.75 });
+  var nSp = 8;
+  for (var i = 0; i < nSp; i++){
+    var spoke = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.02, halfW*0.7), 1.45*torusR, 0.032), spokeMat);
+    spoke.rotation.x = i * (Math.PI / nSp);
+    spinGroup.add(spoke);
+  }
+
+  var treadMat = new THREE.MeshStandardMaterial({ color: 0x3a3a46, roughness: 0.95, metalness: 0.02 });
+  var nTread = 10, ch = 0.06;
+  for (var t = 0; t < nTread; t++){
+    var ang = t * Math.PI * 2 / nTread;
+    var bar = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.06, halfW*2.05), ch, ch*1.15), treadMat);
+    bar.position.set(0, Math.cos(ang)*(torusR+tube*0.12), Math.sin(ang)*(torusR+tube*0.12));
+    bar.rotation.x = ang;
+    spinGroup.add(bar);
+  }
+
+  g.add(spinGroup);
+  g.userData.spinGroup = spinGroup;
+  return g;
 }
+
+function init3dScene(){
+  if (scene3dReady) return;
+  var container = document.getElementById('scene3dContainer');
+  if (!container || typeof THREE === 'undefined') return;
+  var w = container.clientWidth || 700, h = container.clientHeight || 400;
+
+  scene3d = new THREE.Scene();
+  scene3d.background = new THREE.Color(0x0a0e17);
+  camera3d = new THREE.PerspectiveCamera(50, w/h, 0.1, 300);
+  renderer3d = new THREE.WebGLRenderer({ antialias: true });
+  renderer3d.setSize(w, h);
+  renderer3d.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  container.appendChild(renderer3d.domElement);
+
+  scene3d.add(new THREE.AmbientLight(0x8899aa, 1.05));
+  var dir = new THREE.DirectionalLight(0xffffff, 1.15);
+  dir.position.set(20, 40, 10);
+  scene3d.add(dir);
+  var fill = new THREE.DirectionalLight(0xaaccff, 0.55);
+  fill.position.set(-15, 20, -10);
+  scene3d.add(fill);
+
+  groundGroup3d = new THREE.Group();
+  scene3d.add(groundGroup3d);
+  groundGroup3d.add(new THREE.GridHelper(400, 80, 0x2a3a55, 0x1a2332));
+
+  var laneMat = new THREE.LineBasicMaterial({ color: 0xffee88 });
+  function laneLine(x){
+    var geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, 0.02, -80), new THREE.Vector3(x, 0.02, 400)]);
+    return new THREE.Line(geo, laneMat);
+  }
+  scene3d.add(laneLine(-(car.track||1.5)/2 - 1.8));
+  scene3d.add(laneLine((car.track||1.5)/2 + 1.8));
+
+  chassisGroup3d = new THREE.Group();
+  scene3d.add(chassisGroup3d);
+  var chassisBody = new THREE.Mesh(
+    new THREE.BoxGeometry(car.track ? car.track*0.85 : 1.7, 0.5, 4.2),
+    new THREE.MeshStandardMaterial({ color: 0xff8a3d, roughness: 0.45, metalness: 0.25 })
+  );
+  chassisBody.position.y = 0.55;
+  chassisGroup3d.add(chassisBody);
+  var nose = new THREE.Mesh(
+    new THREE.ConeGeometry(0.18, 0.55, 8),
+    new THREE.MeshStandardMaterial({ color: 0xe8a54b, emissive: 0xe8a54b, emissiveIntensity: 0.35, roughness: 0.4 })
+  );
+  nose.rotation.x = Math.PI/2;
+  nose.position.set(0, 0.55, 2.3);
+  chassisGroup3d.add(nose);
+
+  wheelMeshes3d = [];
+  for (var i = 0; i < 4; i++){
+    var mesh = make3dWheel();
+    chassisGroup3d.add(mesh);
+    wheelMeshes3d.push(mesh);
+  }
+
+  obstacleMeshes3d = car.obstacles.map(function(obs){
+    var m = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 1.4, 1.2),
+      new THREE.MeshStandardMaterial({ color: 0xff3355, emissive: 0x440010, roughness: 0.55 })
+    );
+    // obs.x = adelante (mi motor), obs.z = lateral -> three.js (lateral, _, adelante)
+    m.position.set(obs.z, 0.7, obs.x);
+    scene3d.add(m);
+    return m;
+  });
+
+  scene3dReady = true;
+}
+
+function resize3dScene(){
+  if (!scene3dReady || !renderer3d) return;
+  var container = document.getElementById('scene3dContainer');
+  var w = container.clientWidth, h = container.clientHeight;
+  if (w < 10 || h < 10) return;
+  camera3d.aspect = w/h;
+  camera3d.updateProjectionMatrix();
+  renderer3d.setSize(w, h);
+}
+window.addEventListener('resize', resize3dScene);
 
 var viewToggleBtn = document.getElementById('viewToggleBtn');
 if (viewToggleBtn){
   viewToggleBtn.addEventListener('click', function(){
     viewMode = (viewMode === 'topdown') ? 'immersive' : 'topdown';
     var immersiveEl = document.getElementById('immersiveWrap');
-    if (immersiveEl) immersiveEl.style.display = (viewMode === 'immersive') ? 'grid' : 'none';
+    if (immersiveEl) immersiveEl.style.display = (viewMode === 'immersive') ? 'block' : 'none';
     viewToggleBtn.classList.toggle('active', viewMode === 'immersive');
-    viewToggleBtn.textContent = (viewMode === 'immersive') ? '📹 Vista superior' : '📹 Vista inmersiva';
-    // El texto de ayuda se solapaba con la etiqueta "Vista conductor" — en
-    // modo inmersivo el propio salpicadero ya muestra velocidad/marcha/RPM.
+    viewToggleBtn.textContent = (viewMode === 'immersive') ? '📹 Vista superior' : '📹 Vista inmersiva (3D)';
     if (hint) hint.style.display = (viewMode === 'immersive') ? 'none' : '';
-    if (viewMode === 'immersive') resizeImmersiveCanvases();
+    if (viewMode === 'immersive'){
+      init3dScene();
+      setTimeout(resize3dScene, 50);
+    }
   });
 }
-window.addEventListener('resize', resizeImmersiveCanvases);
 
-// Convierte un desplazamiento LOCAL al coche (lon=adelante, lat=lateral)
-// en una coordenada del MUNDO, rotando por su rumbo actual — misma
-// fórmula que ya usa addTireMarks(). Antes los puntos de la carretera
-// (roadLeftFar, la línea central...) se calculaban como offsets fijos
-// del mundo (lateral±3.5, forward+100): "100m por delante" solo
-// significaba eso de verdad con psi=0. En cualquier otro rumbo, esos
-// puntos no representaban en absoluto "delante del coche".
-function localToWorld(originLateral, originForward, heading, lonOffset, latOffset){
-  var cH = Math.cos(heading), sH = Math.sin(heading);
-  return {
-    forward: originForward + lonOffset * cH - latOffset * sH,
-    lateral: originLateral + lonOffset * sH + latOffset * cH
-  };
+function update3dScene(out, dt, steerInput){
+  if (!scene3dReady) return;
+
+  // Intercambio de ejes deliberado: three.X=lateral(mi z), three.Z=adelante(mi x).
+  chassisGroup3d.position.set(out.state.z, 0, out.state.x);
+  chassisGroup3d.rotation.y = out.state.psi;
+
+  var halfTrack = (car.track || 1.5) / 2, halfWB = (car.wheelbase || 2.6) / 2;
+  var wheelLocalPos = [
+    [-halfTrack, halfWB], [halfTrack, halfWB],   // FL, FR (delanteras)
+    [-halfTrack, -halfWB], [halfTrack, -halfWB]  // RL, RR (traseras)
+  ];
+  var R0 = car.wheelRadius || 0.32;
+  for (var i = 0; i < 4; i++){
+    var mesh = wheelMeshes3d[i];
+    if (!mesh) continue;
+    mesh.position.set(wheelLocalPos[i][0], R0, wheelLocalPos[i][1]);
+    // Las ruedas delanteras (0,1) giran con el volante; el ángulo real
+    // de dirección no lo expone `out`, así que se aproxima con el input
+    // de control (steer) escalado a un máximo razonable de 35°.
+    if (i < 2) mesh.rotation.y = (steerInput || 0) * (35 * Math.PI / 180);
+    wheelSpinAngle[i] += (out.wheels[i] ? out.wheels[i].omega : 0) * dt;
+    if (mesh.userData.spinGroup) mesh.userData.spinGroup.rotation.x = -wheelSpinAngle[i];
+  }
+
+  var chaseDist = 7.5, chaseHeight = 3.0;
+  var camXTarget = out.state.z - Math.sin(out.state.psi) * chaseDist;
+  var camZTarget = out.state.x - Math.cos(out.state.psi) * chaseDist;
+  camera3d.position.x += (camXTarget - camera3d.position.x) * Math.min(1, dt*4);
+  camera3d.position.z += (camZTarget - camera3d.position.z) * Math.min(1, dt*4);
+  camera3d.position.y += (chaseHeight - camera3d.position.y) * Math.min(1, dt*4);
+  camera3d.lookAt(out.state.z, 0.6, out.state.x);
+
+  document.getElementById('hud3dSpeed').textContent = Math.round(Math.abs(out.state.u) * 3.6) + ' km/h';
+  document.getElementById('hud3dGear').textContent = out.gearName;
+  document.getElementById('hud3dRpm').textContent = Math.round(out.engineRPM) + ' RPM';
+
+  renderer3d.render(scene3d, camera3d);
 }
-
-// Antes esta función asumía que la cámara siempre mira fijo hacia el eje
-// X del mundo, sin importar hacia dónde apunte el coche — la "distancia"
-// (depth) se calculaba como una simple resta en Z, y el desplazamiento
-// lateral como una resta en X. Con el coche girado (psi≠0) eso da
-// resultados sin sentido: comprobado con el motor real, tras 2s de
-// volantazo a fondo el coche gira -119° y el «borde cercano» de la
-// carretera terminaba proyectado como si estuviera casi encima de la
-// cámara. Ahora se rota el vector cámara→punto por el rumbo antes de
-// separar profundidad y lateral — igual que ya hace addTireMarks() para
-// pasar de coordenadas locales del coche a coordenadas del mundo, pero
-// aquí en sentido inverso (de mundo a coordenadas «vistas desde» la cámara).
-function projectToScreen(worldLateral, worldForward, refLateral, refForward, heading, canvasW, canvasH){
-  var dX = worldForward - refForward;
-  var dZ = worldLateral - refLateral;
-  var cH = Math.cos(heading), sH = Math.sin(heading);
-  var depth = dX * cH + dZ * sH;
-  var sideways = -dX * sH + dZ * cH;
-  if (depth < 0.1) depth = 0.1; // detrás de la cámara: el llamador debe filtrar por .depth, pero nunca ÷0
-  var perspective = 1 / depth;
-  return {
-    x: canvasW / 2 + sideways * perspective * 100,
-    y: immersiveHorizonY + (2.5 * perspective * 100),
-    scale: perspective * 100,
-    depth: depth
-  };
-}
-
-var worldObjects = [];
-function generateWorldObjects(){
-  worldObjects = [];
-  for (var i = 0; i < 60; i++){
-    worldObjects.push({ lateral: (i % 2 === 0 ? -8 : 8), forward: i * 20, type: 'tree', size: 2 });
-  }
-  for (var j = 0; j < 30; j++){
-    worldObjects.push({ lateral: (j % 2 === 0 ? -6 : 6), forward: j * 40, type: 'pole', size: 0.5 });
-  }
-}
-generateWorldObjects();
-
-// Reloj propio que se acumula con el tiempo real, no con dt de un solo
-// fotograma — antes el temblor de colisión usaba Math.sin(dt*50), y dt
-// (~0.0167s a 60fps) apenas cambia de un fotograma al siguiente, así que
-// no era un temblor: era un desplazamiento fijo, casi constante siempre.
-var immersiveClock = 0;
-
-// ===== NUBES EN MOVIMIENTO =====
-// Antes avanzaban con cloudOffset += 0.5 por LLAMADA (por fotograma), no
-// por tiempo real — la velocidad de deriva dependería del framerate del
-// dispositivo (más rápido en una pantalla de 120Hz que en una de 60Hz).
-// Aquí se escala por dt, en píxeles/segundo reales.
-var cloudOffset = 0;
-function drawClouds(ctx, w, h, dt){
-  if (!ctx) return;
-  cloudOffset += 30 * dt;
-  for (var i = 0; i < 6; i++){
-    var cloudX = (i * 200 + cloudOffset) % (w + 400) - 200;
-    var cloudY = 30 + i * 20;
-    var cloudSize = 40 + i * 10;
-    ctx.fillStyle = 'rgba(255,255,255,0.15)';
-    ctx.beginPath(); ctx.ellipse(cloudX, cloudY, cloudSize*2, cloudSize, 0, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.1)';
-    ctx.beginPath(); ctx.ellipse(cloudX + cloudSize*0.5, cloudY + cloudSize*0.2, cloudSize*1.5, cloudSize*0.7, 0, 0, Math.PI*2); ctx.fill();
-  }
-}
-
-// ===== REFLEJOS EN EL PARABRISAS =====
-function drawWindshieldReflection(ctx, w, h){
-  if (!ctx) return;
-  var grad = ctx.createLinearGradient(0, 0, 0, h * 0.5);
-  grad.addColorStop(0, 'rgba(255,255,255,0.1)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h * 0.5);
-  ctx.fillStyle = 'rgba(255,255,200,0.2)';
-  ctx.beginPath(); ctx.arc(w * 0.3, h * 0.1, 20, 0, Math.PI*2); ctx.fill();
-}
-
-// ===== VIBRACIÓN (háptica en móvil + visual del volante) =====
-// La versión original llamaba a navigator.vibrate() en CADA fotograma
-// mientras se cumplía la condición — cada llamada nueva CANCELA el
-// patrón en curso. El patrón de choque [100,50,100] tarda ~250ms en
-// completarse, y si se repite 16ms después (el fotograma siguiente),
-// nunca llega a sonar entero. Se limita a un disparo por evento,
-// dejando que cada patrón termine antes de poder repetirse.
-var lastCollisionVibrate = -Infinity, lastCorneringVibrate = -Infinity;
-function handleSteeringVibration(out, controls, nowMs){
-  if (navigator.vibrate){
-    if (out.collisionForce > 5000 && nowMs - lastCollisionVibrate > 400){
-      navigator.vibrate([100, 50, 100]);
-      lastCollisionVibrate = nowMs;
-    } else if (Math.abs(out.state.r) > 0.5 && Math.abs(out.state.u) > 20 && nowMs - lastCorneringVibrate > 250){
-      navigator.vibrate(30);
-      lastCorneringVibrate = nowMs;
-    }
-  }
-  if (controls.steer !== 0){
-    var intensity = Math.abs(controls.steer) * 2;
-    var vx = Math.sin(immersiveClock * 50) * intensity;
-    var vy = Math.cos(immersiveClock * 70) * intensity;
-    var wheelEl = document.getElementById('steeringWheel');
-    if (wheelEl) wheelEl.style.transform = 'translate(' + vx + 'px,' + vy + 'px)';
-  }
-}
-
-// ===== SONIDO DE DERRAPE =====
-var tireSquealOscillator = null, tireSquealGain = null, tireSquealFilter = null;
-function initTireSquealSound(){
-  if (!audioCtx || tireSquealOscillator) return; // ya inicializado, o sin audioCtx todavía
-  tireSquealOscillator = audioCtx.createOscillator();
-  tireSquealOscillator.type = 'sawtooth';
-  tireSquealOscillator.frequency.value = 2000;
-  tireSquealFilter = audioCtx.createBiquadFilter();
-  tireSquealFilter.type = 'bandpass';
-  tireSquealFilter.frequency.value = 3000;
-  tireSquealFilter.Q.value = 10;
-  tireSquealGain = audioCtx.createGain();
-  tireSquealGain.gain.value = 0.0;
-  tireSquealOscillator.connect(tireSquealFilter);
-  tireSquealFilter.connect(tireSquealGain);
-  tireSquealGain.connect(audioCtx.destination);
-  tireSquealOscillator.start();
-}
-function updateTireSquealSound(out){
-  if (!audioCtx || !tireSquealGain) return;
-  var maxSlip = 0;
-  for (var i = 0; i < out.wheels.length; i++) maxSlip = Math.max(maxSlip, Math.abs(out.wheels[i].slip));
-  var shouldSqueal = maxSlip > 0.3 && Math.abs(out.state.u) > 5;
-  if (shouldSqueal){
-    var speedNorm = Math.min(1, Math.abs(out.state.u) / 50);
-    tireSquealOscillator.frequency.setTargetAtTime(1500 + speedNorm * 1500, audioCtx.currentTime, 0.05);
-    var intensity = Math.min(1, (maxSlip - 0.3) / 0.4);
-    tireSquealGain.gain.setTargetAtTime(intensity * 0.2, audioCtx.currentTime, 0.05);
-  } else {
-    tireSquealGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
-  }
-}
-
-function drawDriverView(out, dt){
-  if (!driverCtx) return;
-  var rect = driverCanvas.getBoundingClientRect();
-  var w = rect.width, h = rect.height;
-  driverCtx.clearRect(0, 0, w, h);
-
-  var forward = out.state.x, lateral = out.state.z, psi = out.state.psi;
-  immersiveHorizonY = h * 0.45;
-
-  driverCtx.fillStyle = '#1a1e23'; driverCtx.fillRect(0, 0, w, immersiveHorizonY);
-  driverCtx.fillStyle = '#0f1114'; driverCtx.fillRect(0, immersiveHorizonY, w, h - immersiveHorizonY);
-
-  var pLF = localToWorld(lateral, forward, psi, 100, -3.5);
-  var pRF = localToWorld(lateral, forward, psi, 100, 3.5);
-  var pLN = localToWorld(lateral, forward, psi, 2, -3.5);
-  var pRN = localToWorld(lateral, forward, psi, 2, 3.5);
-  var roadLeftFar = projectToScreen(pLF.lateral, pLF.forward, lateral, forward, psi, w, h);
-  var roadRightFar = projectToScreen(pRF.lateral, pRF.forward, lateral, forward, psi, w, h);
-  var roadLeftNear = projectToScreen(pLN.lateral, pLN.forward, lateral, forward, psi, w, h);
-  var roadRightNear = projectToScreen(pRN.lateral, pRN.forward, lateral, forward, psi, w, h);
-  driverCtx.fillStyle = '#252a30';
-  driverCtx.beginPath();
-  driverCtx.moveTo(roadLeftFar.x, roadLeftFar.y);
-  driverCtx.lineTo(roadRightFar.x, roadRightFar.y);
-  driverCtx.lineTo(roadRightNear.x, roadRightNear.y);
-  driverCtx.lineTo(roadLeftNear.x, roadLeftNear.y);
-  driverCtx.closePath(); driverCtx.fill();
-
-  // Antes esto dibujaba ~10 segmentos cortos, cada uno con su propia
-  // proyección independiente — cualquier segmento cercano a la cámara
-  // podía salir con una perspectiva desproporcionada y crear una línea
-  // diagonal suelta, aunque los extremos individualmente no estuvieran
-  // "detrás" de la cámara (confirmado desactivando el bucle: el defecto
-  // desaparecía). Ahora es UN solo trazo, con los mismos puntos cercano/
-  // lejano que ya uso para el polígono de la carretera (esos sí se ven
-  // bien), y el guioneado lo hace el propio canvas — sin segmentos
-  // sueltos que puedan proyectarse cada uno a su manera.
-  var pFar = localToWorld(lateral, forward, psi, 100, 0);
-  var pNear = localToWorld(lateral, forward, psi, 2, 0);
-  var centerFar = projectToScreen(pFar.lateral, pFar.forward, lateral, forward, psi, w, h);
-  var centerNear = projectToScreen(pNear.lateral, pNear.forward, lateral, forward, psi, w, h);
-  if (centerFar.depth > 2 && centerNear.depth > 2){
-    driverCtx.strokeStyle = '#f0c040'; driverCtx.lineWidth = 2;
-    driverCtx.setLineDash([15, 15]);
-    driverCtx.beginPath(); driverCtx.moveTo(centerNear.x, centerNear.y); driverCtx.lineTo(centerFar.x, centerFar.y); driverCtx.stroke();
-    driverCtx.setLineDash([]);
-  }
-
-  var shaking = out.collisionForce > 500;
-  if (shaking){
-    driverCtx.save();
-    driverCtx.translate(Math.sin(immersiveClock * 60) * 4, Math.cos(immersiveClock * 55) * 4);
-  }
-
-  drawWindshieldReflection(driverCtx, w, h);
-
-  driverCtx.fillStyle = 'rgba(10,12,15,0.9)';
-  driverCtx.fillRect(0, h - 80, w, 80);
-  driverCtx.fillStyle = '#e8ebef';
-  driverCtx.font = 'bold 32px monospace';
-  driverCtx.textAlign = 'center';
-  driverCtx.fillText(Math.round(Math.abs(out.state.u) * 3.6) + ' km/h', w / 2, h - 30);
-  driverCtx.font = '16px monospace';
-  driverCtx.fillStyle = '#838b97';
-  driverCtx.fillText(Math.round(out.engineRPM) + ' RPM', w / 2 + 100, h - 40);
-  driverCtx.fillText(out.gearName, w / 2 - 100, h - 40);
-  driverCtx.textAlign = 'left';
-
-  if (shaking){
-    driverCtx.restore();
-    driverCtx.fillStyle = 'rgba(255,0,0,0.25)';
-    driverCtx.fillRect(0, 0, w, h);
-  }
-}
-
-function drawChaseView(out, dt){
-  if (!chaseCtx) return;
-  var rect = chaseCanvas.getBoundingClientRect();
-  var w = rect.width, h = rect.height;
-  chaseCtx.clearRect(0, 0, w, h);
-
-  var forward = out.state.x, lateral = out.state.z, psi = out.state.psi;
-  immersiveHorizonY = h * 0.35;
-
-  var skyGrad = chaseCtx.createLinearGradient(0, 0, 0, immersiveHorizonY);
-  skyGrad.addColorStop(0, '#0a0c0f'); skyGrad.addColorStop(1, '#2a3a4a');
-  chaseCtx.fillStyle = skyGrad; chaseCtx.fillRect(0, 0, w, immersiveHorizonY);
-  drawClouds(chaseCtx, w, immersiveHorizonY, dt);
-  chaseCtx.fillStyle = '#13161a'; chaseCtx.fillRect(0, immersiveHorizonY, w, h - immersiveHorizonY);
-
-  // La cámara de esta vista va detrás del coche (con el mismo lerp que
-  // la vista superior, chaseCamX/chaseCamZ), no pegada a él como la del conductor.
-  for (var i = 0; i < worldObjects.length; i++){
-    var obj = worldObjects[i];
-    if (obj.forward - chaseCamZ < -10 || obj.forward - chaseCamZ > 150) continue; // fuera de rango razonable, ahorra dibujo
-    var os = projectToScreen(obj.lateral, obj.forward, chaseCamX, chaseCamZ, psi, w, h);
-    if (os.x < -100 || os.x > w + 100 || os.y < -100 || os.y > h + 100) continue;
-    var osize = obj.size * os.scale;
-    if (obj.type === 'tree'){
-      chaseCtx.fillStyle = '#1a4a2a';
-      chaseCtx.beginPath(); chaseCtx.arc(os.x, os.y - osize, osize, 0, Math.PI*2); chaseCtx.fill();
-      chaseCtx.fillStyle = '#5a3a1a';
-      chaseCtx.fillRect(os.x - 2, os.y - 2, 4, osize * 0.5);
-    } else {
-      chaseCtx.fillStyle = '#888';
-      chaseCtx.fillRect(os.x - osize/2, os.y - osize*3, osize, osize*3);
-      chaseCtx.fillStyle = '#ff0';
-      chaseCtx.beginPath(); chaseCtx.arc(os.x, os.y - osize*3, osize*0.3, 0, Math.PI*2); chaseCtx.fill();
-    }
-  }
-
-  // Con la cámara ya realmente detrás del coche (chaseLookBehind=-8), los
-  // puntos de la carretera se anclan al COCHE y se rotan por su rumbo
-  // (igual que en la vista del conductor) — no directamente a la cámara,
-  // que solo sirve como referencia para calcular la profundidad.
-  var cpLF = localToWorld(lateral, forward, psi, 100, -3.5);
-  var cpRF = localToWorld(lateral, forward, psi, 100, 3.5);
-  var cpLN = localToWorld(lateral, forward, psi, -5, -3.5);
-  var cpRN = localToWorld(lateral, forward, psi, -5, 3.5);
-  var roadLeftFar = projectToScreen(cpLF.lateral, cpLF.forward, chaseCamX, chaseCamZ, psi, w, h);
-  var roadRightFar = projectToScreen(cpRF.lateral, cpRF.forward, chaseCamX, chaseCamZ, psi, w, h);
-  var roadLeftNear = projectToScreen(cpLN.lateral, cpLN.forward, chaseCamX, chaseCamZ, psi, w, h);
-  var roadRightNear = projectToScreen(cpRN.lateral, cpRN.forward, chaseCamX, chaseCamZ, psi, w, h);
-  chaseCtx.fillStyle = '#252a30';
-  chaseCtx.beginPath();
-  chaseCtx.moveTo(roadLeftFar.x, roadLeftFar.y);
-  chaseCtx.lineTo(roadRightFar.x, roadRightFar.y);
-  chaseCtx.lineTo(roadRightNear.x, roadRightNear.y);
-  chaseCtx.lineTo(roadLeftNear.x, roadLeftNear.y);
-  chaseCtx.closePath(); chaseCtx.fill();
-
-  // Mismo cambio que en la vista del conductor: un solo trazo con los
-  // puntos cercano/lejano ya usados para el polígono de la carretera, en
-  // vez de muchos segmentos independientes que podían proyectarse mal
-  // cada uno por su cuenta (confirmado desactivando el bucle: el defecto
-  // desaparecía por completo).
-  var cFar = localToWorld(lateral, forward, psi, 100, 0);
-  var cNear = localToWorld(lateral, forward, psi, -5, 0);
-  var centerFar2 = projectToScreen(cFar.lateral, cFar.forward, chaseCamX, chaseCamZ, psi, w, h);
-  var centerNear2 = projectToScreen(cNear.lateral, cNear.forward, chaseCamX, chaseCamZ, psi, w, h);
-  if (centerFar2.depth > 2 && centerNear2.depth > 2){
-    chaseCtx.strokeStyle = '#f0c040'; chaseCtx.lineWidth = 3;
-    chaseCtx.setLineDash([18, 18]);
-    chaseCtx.beginPath(); chaseCtx.moveTo(centerNear2.x, centerNear2.y); chaseCtx.lineTo(centerFar2.x, centerFar2.y); chaseCtx.stroke();
-    chaseCtx.setLineDash([]);
-  }
-
-  for (var k = 0; k < car.obstacles.length; k++){
-    var obs = car.obstacles[k];
-    if (obs.x - chaseCamZ < -5) continue; // ya quedó atrás
-    var oS = projectToScreen(obs.z, obs.x, chaseCamX, chaseCamZ, psi, w, h);
-    var oSize = obs.radius * oS.scale;
-    if (oS.y > immersiveHorizonY && oS.y < h + 200){
-      chaseCtx.fillStyle = '#ff5d5d';
-      chaseCtx.beginPath(); chaseCtx.arc(oS.x, oS.y - oSize, oSize, 0, Math.PI*2); chaseCtx.fill();
-    }
-  }
-
-  if (forward - chaseCamZ > 0.05 || true){ // el coche siempre está frente a esta cámara (mira hacia delante)
-    var cS = projectToScreen(lateral, forward, chaseCamX, chaseCamZ, psi, w, h);
-    var carSize = 4.4 * cS.scale;
-    chaseCtx.fillStyle = 'rgba(0,0,0,0.5)';
-    chaseCtx.beginPath(); chaseCtx.ellipse(cS.x, cS.y, carSize*0.6, carSize*0.3, 0, 0, Math.PI*2); chaseCtx.fill();
-    chaseCtx.fillStyle = '#ff8a3d';
-    chaseCtx.fillRect(cS.x - carSize/2, cS.y - carSize/2, carSize, carSize);
-    chaseCtx.fillStyle = '#0a0c0f';
-    chaseCtx.fillRect(cS.x - carSize/2 + 2, cS.y - carSize/2 + 2, carSize - 4, carSize*0.4);
-  }
-}
-
 var last = performance.now();
 function loop(now){
   var dt = Math.min(0.05, (now - last) / 1000);
@@ -839,17 +707,13 @@ function loop(now){
 
   addTireMarks(out);
   updateCamera(out, dt);
-  immersiveClock += dt;
   if (viewMode === 'immersive'){
-    drawDriverView(out, dt);
-    drawChaseView(out, dt);
+    update3dScene(out, dt, controls.steer);
   } else {
     draw(out, dt);
   }
   drawMinimap(out);
   updateEngineSound(out);
-  updateTireSquealSound(out);
-  handleSteeringVibration(out, controls, now);
 
   document.getElementById('teleSpeed').textContent = fmt(Math.abs(out.state.u) * 3.6, 1) + ' km/h';
   document.getElementById('teleGear').textContent = out.gearName;
