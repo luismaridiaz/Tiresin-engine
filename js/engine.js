@@ -599,7 +599,22 @@ const TireSimEngine = (() => {
         (this.wheelFy[0] + this.wheelFy[1]) * this.wheelbase / 2 -
         (this.wheelFy[2] + this.wheelFy[3]) * this.wheelbase / 2;
 
-      this.r += (Mz / this.Izz) * this.dt;
+      // Sin amortiguación, un momento de guiñada sostenido (Mz) hace
+      // crecer r sin límite para siempre — matemáticamente correcto para
+      // esta ecuación, pero irreal: un neumático real pierde agarre
+      // lateral progresivamente pasado el ángulo de deslizamiento
+      // óptimo (curva con pico y caída), lo que auto-limita el giro.
+      // Ese efecto no está modelado aquí (Fy_wheelFrame satura pero no
+      // decae), así que sin nada que lo frene, un volantazo sostenido a
+      // baja velocidad hace que el coche gire sobre sí mismo sin
+      // estabilizarse — comprobado con el motor real: r creció de
+      // -0.02 a -1.7 rad/s en menos de un segundo, sin parar. La
+      // amortiguación es pequeña a propósito: a velocidad de giro
+      // normal (cornering en equilibrio) es insignificante frente al
+      // propio Mz de los neumáticos; solo importa cuando no hay nada
+      // más frenando la guiñada.
+      const yawDamping = 1.5;
+      this.r += (Mz / this.Izz) * this.dt - yawDamping * this.r * this.dt;
 
       this.x += (this.u * cosPsi - this.v * sinPsi) * this.dt;
       this.z += (this.u * sinPsi + this.v * cosPsi) * this.dt;
