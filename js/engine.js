@@ -197,7 +197,17 @@ const TireSimEngine = (() => {
       this.wheelFy = [0, 0, 0, 0];
       this.wheelSlip = [0, 0, 0, 0];
 
-      this.contact = new DahlStribeckContact({
+      // Antes había UN solo this.contact compartido por las 4 ruedas — el
+      // modelo Dahl-Stribeck mantiene estado interno persistente (zX, zY,
+      // la deformación de la "cerda" de contacto) que debe ser POR RUEDA,
+      // no global. Con un solo objeto, cada rueda pisaba el estado que
+      // dejó la anterior en la misma vuelta del bucle — comprobado como
+      // causa real de que, con volante a fondo y acelerador a fondo a la
+      // vez, Fx oscilara entre -2000N y +2000N cada sub-paso y el coche
+      // apenas avanzara (u convergía a ~0.045 m/s incluso con el paso de
+      // integración 1000 veces más fino, descartando que fuera un
+      // problema de resolución numérica).
+      const contactParams = {
         muStatic: params.muStatic ?? 1.0,
         muDynamic: params.muDynamic ?? 0.85,
         contactStiffness: params.contactStiffness ?? 120000,
@@ -205,7 +215,8 @@ const TireSimEngine = (() => {
         stribeckSpeed: params.stribeckSpeed ?? 0.05,
         regularization: params.regularization ?? 0.02,
         temperature: params.temperature ?? 25
-      });
+      };
+      this.contacts = [0, 1, 2, 3].map(() => new DahlStribeckContact(contactParams));
 
       this.transmission = new Transmission({
         gearRatios: params.gearRatios,
@@ -520,7 +531,16 @@ const TireSimEngine = (() => {
         const absSteer = Math.abs(steerAngle);
         const delta_o = absSteer;
         const cotO = 1 / Math.tan(absSteer);
-        const delta_i = Math.atan2(1, Math.max(0.001, cotO - T / L));
+        const delta_iRaw = Math.atan2(1, Math.max(0.001, cotO - T / L));
+        // Ackermann puro puede pedirle a la rueda interior un ángulo mucho
+        // mayor que el máximo de dirección nominal en radios muy cerrados
+        // (con este batalla/vía, hasta 50° pidiendo 35°) — un coche real
+        // no lo permite, el propio mecanismo de la cremallera lo limita.
+        // Comprobado como parte de la causa de que, con volante y
+        // acelerador a fondo a la vez desde parado, Fx oscilara de forma
+        // errática (hasta 50° un ángulo modesto de deslizamiento genera,
+        // al proyectarlo, una fuerza longitudinal desproporcionada).
+        const delta_i = Math.min(delta_iRaw, maxSteerAngle * 1.15);
         if (sign > 0) { steerAngles[0] = sign * delta_i; steerAngles[1] = sign * delta_o; }
         else { steerAngles[0] = sign * delta_o; steerAngles[1] = sign * delta_i; }
         steerAngles[2] = steerAngle * 0.1;
@@ -539,7 +559,7 @@ const TireSimEngine = (() => {
         const vy_wheel = -this.u * sS + this.v * cS;
 
         const vs = this.wheelOmega[i] * R - vx_wheel;
-        const result = this.contact.compute(vs, Fz[i], this.dt);
+        const result = this.contacts[i].compute(vs, Fz[i], this.dt);
         const Fx_wheelFrame = result.Fx;
 
         const alphaSlip = Math.atan2(vy_wheel, Math.max(0.5, Math.abs(vx_wheel)));
@@ -626,7 +646,7 @@ const TireSimEngine = (() => {
       const heatGen = Math.abs(this.u) * 0.1 + Math.abs(this.r) * 0.5 + Math.abs(this.collisionForce) * 0.001;
       this.temp += (heatGen - 0.02 * (this.temp - 25)) * this.dt;
       this.temp = Math.max(25, Math.min(120, this.temp));
-      this.contact.temperature = this.temp;
+      this.contacts.forEach(c => c.temperature = this.temp);
 
       return {
         state: { x: this.x, z: this.z, psi: this.psi, u: this.u, v: this.v, r: this.r },
@@ -661,7 +681,7 @@ const TireSimEngine = (() => {
       this.suspensionVelocity = [0, 0, 0, 0];
       this._tcsFactor = 1;
       this._absFactor = 1;
-      this.contact.reset();
+      this.contacts.forEach(c => c.reset());
       this.transmission.reset();
     }
 

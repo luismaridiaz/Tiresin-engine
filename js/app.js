@@ -105,8 +105,9 @@ function createCar(configKey){
 function applyWeather(weatherKey){
   var weather = weatherConfigs[weatherKey];
   currentWeather = weatherKey;
-  car.contact.muStatic = weather.muStatic;
-  car.contact.muDynamic = weather.muDynamic;
+  // car.contacts es un array (una instancia de fricción por rueda, tras
+  // el arreglo del motor) — antes era un único car.contact compartido.
+  car.contacts.forEach(function(c){ c.muStatic = weather.muStatic; c.muDynamic = weather.muDynamic; });
   if (weatherEl) weatherEl.textContent = weather.name;
   if (weather.particles){
     particles = [];
@@ -167,6 +168,7 @@ window.addEventListener('keydown', function(e){
 window.addEventListener('keyup', function(e){ keys[e.key.toLowerCase()] = false; updateKeyVisuals(); });
 
 var hasMoved = false;
+var engineStarted = false;
 function readControls(){
   var throttle = (keys['arrowup'] || keys['w']) ? 1 : 0;
   var brake = (keys['arrowdown'] || keys['s']) ? 1 : 0;
@@ -174,7 +176,51 @@ function readControls(){
   if (keys['arrowleft'] || keys['a']) steer -= 1;
   if (keys['arrowright'] || keys['d']) steer += 1;
   if (throttle || brake || steer) hasMoved = true;
+  // Con el motor apagado, el coche no responde al acelerador — igual
+  // que un coche real. La dirección sí se deja mover libremente (con
+  // el motor apagado también puedes girar el volante).
+  if (!engineStarted){ throttle = 0; brake = 0; }
   return { throttle: throttle, brake: brake, steer: steer };
+}
+
+// --- Botón de arranque ---
+var starterOscillator = null, starterGain = null;
+function playStarterSound(){
+  if (!audioCtx) return;
+  // Sonido de motor de arranque: un zumbido áspero e irregular que dura
+  // ~0.7s y va cediendo, distinto del ronroneo continuo del motor ya en
+  // marcha (updateEngineSound). Un solo disparo, no se actualiza cada
+  // fotograma como el sonido de conducción.
+  var osc = audioCtx.createOscillator();
+  osc.type = 'square';
+  var gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  var now = audioCtx.currentTime;
+  gain.gain.setValueAtTime(0.001, now);
+  for (var i = 0; i < 6; i++){
+    var t = now + i * 0.11;
+    osc.frequency.setValueAtTime(70 + Math.random()*40, t);
+    gain.gain.setValueAtTime(0.16, t);
+    gain.gain.exponentialRampToValueAtTime(0.02, t + 0.09);
+  }
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.75);
+  osc.start(now);
+  osc.stop(now + 0.8);
+}
+
+var ignitionBtn = document.getElementById('ignitionBtn');
+if (ignitionBtn){
+  ignitionBtn.addEventListener('click', function(){
+    if (engineStarted) return;
+    engineStarted = true;
+    initAudio();
+    initTireSquealSound();
+    playStarterSound();
+    ignitionBtn.textContent = '🔑 Motor en marcha';
+    ignitionBtn.disabled = true;
+    ignitionBtn.classList.add('audio-active');
+  });
 }
 
 // --- Cambio manual de marchas ---
@@ -295,6 +341,45 @@ function updateEngineSound(out){
   var targetVolume = 0.05 + (out.throttle * 0.15);
   engineGain.gain.setTargetAtTime(targetVolume, audioCtx.currentTime, 0.05);
   engineFilter.frequency.setTargetAtTime(400 + rpmNorm * 1200, audioCtx.currentTime, 0.1);
+}
+
+// --- Sonido de derrape (llantas chirriando) ---
+// Esta función y updateTireSquealSound() se llamaban desde el botón de
+// audio y desde el bucle principal, pero se perdieron al quitar el
+// bloque de código pseudo-3D al sustituirlo por la escena real de
+// Three.js — dejaban dos llamadas a una función inexistente
+// (initTireSquealSound) que habrían lanzado un error real al pulsar
+// "Activar sonido". Restauradas tal cual estaban.
+var tireSquealOscillator = null, tireSquealGain = null, tireSquealFilter = null;
+function initTireSquealSound(){
+  if (!audioCtx || tireSquealOscillator) return;
+  tireSquealOscillator = audioCtx.createOscillator();
+  tireSquealOscillator.type = 'sawtooth';
+  tireSquealOscillator.frequency.value = 2000;
+  tireSquealFilter = audioCtx.createBiquadFilter();
+  tireSquealFilter.type = 'bandpass';
+  tireSquealFilter.frequency.value = 3000;
+  tireSquealFilter.Q.value = 10;
+  tireSquealGain = audioCtx.createGain();
+  tireSquealGain.gain.value = 0.0;
+  tireSquealOscillator.connect(tireSquealFilter);
+  tireSquealFilter.connect(tireSquealGain);
+  tireSquealGain.connect(audioCtx.destination);
+  tireSquealOscillator.start();
+}
+function updateTireSquealSound(out){
+  if (!audioCtx || !tireSquealGain) return;
+  var maxSlip = 0;
+  for (var i = 0; i < out.wheels.length; i++) maxSlip = Math.max(maxSlip, Math.abs(out.wheels[i].slip));
+  var shouldSqueal = maxSlip > 0.3 && Math.abs(out.state.u) > 5;
+  if (shouldSqueal){
+    var speedNorm = Math.min(1, Math.abs(out.state.u) / 50);
+    tireSquealOscillator.frequency.setTargetAtTime(1500 + speedNorm * 1500, audioCtx.currentTime, 0.05);
+    var intensity = Math.min(1, (maxSlip - 0.3) / 0.4);
+    tireSquealGain.gain.setTargetAtTime(intensity * 0.2, audioCtx.currentTime, 0.05);
+  } else {
+    tireSquealGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+  }
 }
 
 var audioBtn = document.getElementById('audioToggleBtn');
@@ -561,7 +646,16 @@ function make3dWheel(){
 function init3dScene(){
   if (scene3dReady) return;
   var container = document.getElementById('scene3dContainer');
-  if (!container || typeof THREE === 'undefined') return;
+  if (!container) return;
+  if (typeof THREE === 'undefined'){
+    // Antes esto fallaba en silencio: si Three.js no llega a cargar (red,
+    // bloqueador de anuncios tratando el CDN como rastreador, sin
+    // conexión...), la pantalla se quedaba negra sin ningún aviso — daba
+    // la sensación de que la demo "no funciona" o "no se mueve", cuando
+    // en realidad solo faltaba la librería externa.
+    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:13px;">⚠️ No se pudo cargar la librería 3D (Three.js) desde el CDN.<br>Comprueba tu conexión a internet o si algún bloqueador de anuncios está impidiendo la carga de cdnjs.cloudflare.com.<br><br>La vista superior sigue funcionando con normalidad.</div>';
+    return;
+  }
   var w = container.clientWidth || 700, h = container.clientHeight || 400;
 
   scene3d = new THREE.Scene();
@@ -589,23 +683,40 @@ function init3dScene(){
     var geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, 0.02, -80), new THREE.Vector3(x, 0.02, 400)]);
     return new THREE.Line(geo, laneMat);
   }
-  scene3d.add(laneLine(-(car.track||1.5)/2 - 1.8));
-  scene3d.add(laneLine((car.track||1.5)/2 + 1.8));
+  // Antes las líneas de carril quedaban a ±2.525m del centro (medio
+  // ancho de vía + 1.8), pero el obstáculo más lateral (z=2.0, radio
+  // 0.8) llega hasta z=2.8 — el borde de la carretera quedaba DENTRO
+  // del propio obstáculo, sin sitio para esquivarlo sin salirse.
+  // Ensanchado a ±6m (igual que el ancho real usado en la vista
+  // superior, trackHalfWidth) para que siempre quede margen de sobra.
+  scene3d.add(laneLine(-6.0));
+  scene3d.add(laneLine(6.0));
 
   chassisGroup3d = new THREE.Group();
   scene3d.add(chassisGroup3d);
+  // Holgura del bajo calculada como fracción del diámetro real de la
+  // rueda (no un número fijo a ciegas): ~35% del diámetro, como un
+  // turismo normal — con el bajo tocando casi el centro de la rueda
+  // (como tenía al principio) apenas se veía nada; con demasiada
+  // holgura parece un todoterreno elevado (lo comprobé con números
+  // antes de aplicar el valor).
+  var R0init = car.wheelRadius || 0.32;
+  var tubeInit = Math.min(0.45*R0init, Math.max(0.035, 0.11*0.85));
+  var wheelDiamInit = 2 * Math.max(0.12, R0init - tubeInit);
+  var groundClearance = wheelDiamInit * 0.35;
+  var bodyH = 0.5;
   var chassisBody = new THREE.Mesh(
-    new THREE.BoxGeometry(car.track ? car.track*0.85 : 1.7, 0.5, 4.2),
+    new THREE.BoxGeometry(car.track ? car.track*0.85 : 1.7, bodyH, 4.2),
     new THREE.MeshStandardMaterial({ color: 0xff8a3d, roughness: 0.45, metalness: 0.25 })
   );
-  chassisBody.position.y = 0.55;
+  chassisBody.position.y = groundClearance + bodyH/2;
   chassisGroup3d.add(chassisBody);
   var nose = new THREE.Mesh(
     new THREE.ConeGeometry(0.18, 0.55, 8),
     new THREE.MeshStandardMaterial({ color: 0xe8a54b, emissive: 0xe8a54b, emissiveIntensity: 0.35, roughness: 0.4 })
   );
   nose.rotation.x = Math.PI/2;
-  nose.position.set(0, 0.55, 2.3);
+  nose.position.set(0, chassisBody.position.y, 2.3);
   chassisGroup3d.add(nose);
 
   wheelMeshes3d = [];
@@ -681,7 +792,7 @@ function update3dScene(out, dt, steerInput){
     if (mesh.userData.spinGroup) mesh.userData.spinGroup.rotation.x = -wheelSpinAngle[i];
   }
 
-  var chaseDist = 7.5, chaseHeight = 3.0;
+  var chaseDist = 5.5, chaseHeight = 1.8;
   var camXTarget = out.state.z - Math.sin(out.state.psi) * chaseDist;
   var camZTarget = out.state.x - Math.cos(out.state.psi) * chaseDist;
   camera3d.position.x += (camXTarget - camera3d.position.x) * Math.min(1, dt*4);
@@ -694,6 +805,14 @@ function update3dScene(out, dt, steerInput){
   document.getElementById('hud3dRpm').textContent = Math.round(out.engineRPM) + ' RPM';
 
   renderer3d.render(scene3d, camera3d);
+  window.__debug3d = {
+    steerInput: steerInput,
+    wheel0rotY: wheelMeshes3d[0].rotation.y,
+    wheel2rotY: wheelMeshes3d[2].rotation.y,
+    chassisRotY: chassisGroup3d.rotation.y,
+    psi: out.state.psi,
+    wheelSpins: wheelSpinAngle.slice()
+  };
 }
 var last = performance.now();
 function loop(now){
@@ -714,6 +833,7 @@ function loop(now){
   }
   drawMinimap(out);
   updateEngineSound(out);
+  updateTireSquealSound(out);
 
   document.getElementById('teleSpeed').textContent = fmt(Math.abs(out.state.u) * 3.6, 1) + ' km/h';
   document.getElementById('teleGear').textContent = out.gearName;
@@ -741,7 +861,8 @@ function loop(now){
     if (elf) elf.textContent = fmt(out.wheels[i].Fz, 0);
   }
 
-  if (hasMoved){ hint.style.opacity = '0'; engineStateEl.textContent = 'en marcha'; }
+  if (!engineStarted){ engineStateEl.textContent = 'apagado — pulsa 🔑 Arrancar motor'; }
+  else if (hasMoved){ hint.style.opacity = '0'; engineStateEl.textContent = 'en marcha'; }
   else { engineStateEl.textContent = 'en ralentí — pulsa una tecla'; }
 
   requestAnimationFrame(loop);
